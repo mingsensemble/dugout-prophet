@@ -1,0 +1,6 @@
+data/
+results/
+
+*.pkl
+*.pt
+*.csv
