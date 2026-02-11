@@ -3,14 +3,9 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-import matplotlib.pyplot as plt
 
 
-class CNNPitchingDataset(Dataset):
+class CNNPitcherDataset(Dataset):
     def __init__(self, data, features, target, player_col='IDfg', season_col='Season', 
                  nlookbacks=5, min_qual_ip=50):
         """
@@ -111,7 +106,7 @@ class CNNPitchingDataset(Dataset):
     def __getitem__(self, idx):
         return self.sequences[idx], self.targets[idx]
     
-class CNNPitchingPredictionDataset:
+class CNNPitcherPredictionDataset:
     def __init__(self, data, pred_season, features, nlookbacks=5, player_col='IDfg', season_col='Season'):
         self.data = data.copy()
         self.pred_season = pred_season
@@ -175,9 +170,9 @@ class CNNPitchingPredictionDataset:
         pred_metadata_df = pd.DataFrame(pred_metadata).set_index('player_id')
         return pred_sequences, pred_metadata_df
 
-class CNNPitchingModel(nn.Module):
+class CNNPitcherModel(nn.Module):
     def __init__(self, input_channels=6, seq_length=3, num_classes=1):
-        super(CNNPitchingModel, self).__init__()
+        super(CNNPitcherModel, self).__init__()
         self.conv1 = nn.Conv1d(in_channels=input_channels, out_channels=32, kernel_size=2, stride=1)
         self.bn1 = nn.BatchNorm1d(32)
         self.pool = nn.AdaptiveAvgPool1d(1)  # Use adaptive pooling to ensure output size
@@ -215,46 +210,3 @@ class CNNPitchingModel(nn.Module):
         x = self.bn3(x)
         x = self.fc2(x)
         return x
-
-# def prepare_data(X, y, test_size=0.2, batch_size=32):
-#     # Split data
-#     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
-
-#     # Normalize features
-#     scaler = StandardScaler()
-#     X_train_reshaped = X_train.view(X_train.shape[0], -1).numpy()
-#     X_test_reshaped = X_test.view(X_test.shape[0], -1).numpy()
-
-#     X_train_scaled = scaler.fit_transform(X_train_reshaped)
-#     X_test_scaled = scaler.transform(X_test_reshaped)
-
-#     X_train = torch.tensor(X_train_scaled.reshape(X_train.shape), dtype=torch.float32)
-#     X_test = torch.tensor(X_test_scaled.reshape(X_test.shape), dtype=torch.float32)
-
-#     # Create datasets
-#     train_dataset = TensorDataset(X_train, y_train)
-#     test_dataset = TensorDataset(X_test, y_test)
-
-#     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-#     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-
-#     return train_loader, test_loader, scaler
-
-# class EarlyStopping:
-#     def __init__(self, patience=10, min_delta=0.001):
-#         self.patience = patience
-#         self.min_delta = min_delta
-#         self.counter = 0
-#         self.best_loss = None
-#         self.early_stop = False
-
-#     def __call__(self, val_loss):
-#         if self.best_loss is None:
-#             self.best_loss = val_loss
-#         elif val_loss < self.best_loss - self.min_delta:
-#             self.best_loss = val_loss
-#             self.counter = 0
-#         else:
-#             self.counter += 1
-#             if self.counter >= self.patience:
-#                 self.early_stop = True
