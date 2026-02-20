@@ -171,42 +171,45 @@ class CNNPitcherPredictionDataset:
         return pred_sequences, pred_metadata_df
 
 class CNNPitcherModel(nn.Module):
-    def __init__(self, input_channels=6, seq_length=3, num_classes=1):
+    def __init__(self, input_channels=6, seq_length=3, num_classes=1,
+                 conv1_out=32, conv1_kernel=2,
+                 conv2_out=64, conv2_kernel=1,
+                 dropout=0.4, fc1_hidden=128):
         super(CNNPitcherModel, self).__init__()
-        self.conv1 = nn.Conv1d(in_channels=input_channels, out_channels=32, kernel_size=2, stride=1)
-        self.bn1 = nn.BatchNorm1d(32)
-        self.pool = nn.AdaptiveAvgPool1d(1)  # Use adaptive pooling to ensure output size
-        self.dropout = nn.Dropout(0.4)
+        self.conv1 = nn.Conv1d(in_channels=input_channels, out_channels=conv1_out, kernel_size=conv1_kernel, stride=1)
+        self.bn1 = nn.BatchNorm1d(conv1_out)
+        self.pool1 = nn.AdaptiveAvgPool1d(1)
+        self.dropout1 = nn.Dropout(dropout)
 
-        self.conv2 = nn.Conv1d(in_channels=32, out_channels=64, kernel_size=1, stride=1)  # kernel=1 to avoid size issues
-        self.bn2 = nn.BatchNorm1d(64)
-        self.pool = nn.AdaptiveAvgPool1d(1)  # Use adaptive pooling to ensure output size
-        self.dropout = nn.Dropout(0.4)
-        
+        self.conv2 = nn.Conv1d(in_channels=conv1_out, out_channels=conv2_out, kernel_size=conv2_kernel, stride=1)
+        self.bn2 = nn.BatchNorm1d(conv2_out)
+        self.pool2 = nn.AdaptiveAvgPool1d(1)
+        self.dropout2 = nn.Dropout(dropout)
+
         self.flatten = nn.Flatten()
-        self.fc1 = nn.Linear(64, 128)
-        self.bn3 = nn.BatchNorm1d(128)
-        self.fc2 = nn.Linear(128, num_classes)
+        self.fc1 = nn.Linear(conv2_out, fc1_hidden)
+        self.bn3 = nn.BatchNorm1d(fc1_hidden)
+        self.dropout3 = nn.Dropout(dropout)
+        self.fc2 = nn.Linear(fc1_hidden, num_classes)
 
     def forward(self, x):
-        # Input: (batch, seq_length=3, features=6)
-        # Permute to (batch, features=6, seq_length=3) for Conv1d
+        # Input: (batch, seq_length, features)
+        # Permute to (batch, features, seq_length) for Conv1d
         x = x.permute(0, 2, 1)
 
-        x = torch.relu(self.conv1(x))  # (batch, 32, 2)
-        x = self.pool(x)  # (batch, 32, 1)
+        x = torch.relu(self.conv1(x))
+        x = self.pool1(x)
         x = self.bn1(x)
-        x = self.dropout(x)
-   
-        
-        x = torch.relu(self.conv2(x))  # (batch, 64, 2)
-        x = self.pool(x)  # (batch, 64, 1)
+        x = self.dropout1(x)
+
+        x = torch.relu(self.conv2(x))
+        x = self.pool2(x)
         x = self.bn2(x)
-        x = self.dropout(x)
-        
-        x = self.flatten(x)  # (batch, 64)
+        x = self.dropout2(x)
+
+        x = self.flatten(x)
         x = torch.relu(self.fc1(x))
-        x = self.dropout(x)
+        x = self.dropout3(x)
         x = self.bn3(x)
         x = self.fc2(x)
         return x
