@@ -51,7 +51,7 @@ LAM             = 0.046  # 14-day half-life
 
 STUFF_COLS  = ["release_speed", "pfx_x", "pfx_z", "release_spin_rate", "release_extension"]
 COMMAND_COLS = ["plate_x", "plate_z", "zone"]
-CONT_COLS   = STUFF_COLS + COMMAND_COLS + ["pitch_number_in_pa", "xwOBA"]
+CONT_COLS   = STUFF_COLS + COMMAND_COLS + ["pitch_number", "xwOBA"]
 FEATURES    = CONT_COLS + ["pitch_type_enc", "prev_pitch_type_enc"]
 TARGET      = "delta_run_exp"
 
@@ -61,7 +61,7 @@ def build_date_ranges(season: int) -> list:
     yesterday  = datetime.date.today() - datetime.timedelta(days=1)
     season_end = datetime.date(season, 9, 30)
     end_date   = min(yesterday, season_end)
-    month_starts = [datetime.date(season, m, 1) for m in range(4, 10)]
+    month_starts = [datetime.date(season, m, 1) for m in range(3, 10)]
     ranges = []
     for i, start in enumerate(month_starts):
         if start > end_date:
