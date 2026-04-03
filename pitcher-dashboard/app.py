@@ -42,16 +42,12 @@ SCALER_PATH     = os.path.join(ARTIFACT_DIR, "scaler.pkl")
 LE_PATH         = os.path.join(ARTIFACT_DIR, "le.pkl")
 CACHE_MAX_DAYS  = 7
 TRAIN_SEASON    = 2023
-CURRENT_SEASON = datetime.date.today().year
-# if before April 1, use previous season
-if datetime.date.today() < datetime.date(CURRENT_SEASON, 4, 1):
-    CURRENT_SEASON -= 1
-
+CURRENT_SEASON  = datetime.date.today().year
 LAM             = 0.046  # 14-day half-life
 
 STUFF_COLS  = ["release_speed", "pfx_x", "pfx_z", "release_spin_rate", "release_extension"]
 COMMAND_COLS = ["plate_x", "plate_z", "zone"]
-CONT_COLS   = STUFF_COLS + COMMAND_COLS + ["pitch_number", "xwOBA"]
+CONT_COLS   = STUFF_COLS + COMMAND_COLS + ["pitch_number_in_pa", "xwOBA"]
 FEATURES    = CONT_COLS + ["pitch_type_enc", "prev_pitch_type_enc"]
 TARGET      = "delta_run_exp"
 
@@ -61,7 +57,7 @@ def build_date_ranges(season: int) -> list:
     yesterday  = datetime.date.today() - datetime.timedelta(days=1)
     season_end = datetime.date(season, 9, 30)
     end_date   = min(yesterday, season_end)
-    month_starts = [datetime.date(season, m, 1) for m in range(3, 10)]
+    month_starts = [datetime.date(season, m, 1) for m in range(4, 10)]
     ranges = []
     for i, start in enumerate(month_starts):
         if start > end_date:
@@ -244,6 +240,58 @@ def pitcher_trajectory(df, pitcher_id, dates, lam=LAM):
     return traj
 
 
+def compute_empirical_bayes(df, as_of_date, role="SP", min_pitches=100, lam=LAM):
+    """
+    Empirical Bayes shrinkage on pitcher-level xRV.
+    Returns posterior_mean and posterior_std per pitcher.
+    Lower posterior_mean = better pitcher.
+    Higher posterior_std = less confident (small sample).
+    """
+    # appearance-level aggregation
+    sub = df[(df["game_date"] <= pd.Timestamp(as_of_date)) & (df["role"] == role)]
+    appearance_df = (
+        sub.groupby(["pitcher", "game_pk"])
+        .agg(mean_xrv=("pred_xrv", "mean"))
+        .reset_index()
+    )
+
+    # filter min pitches
+    pitch_counts = (
+        sub.groupby("pitcher")["pred_xrv"].count()
+        .reset_index().rename(columns={"pred_xrv": "pitch_count"})
+    )
+    eligible = pitch_counts[pitch_counts["pitch_count"] >= min_pitches]["pitcher"]
+    appearance_df = appearance_df[appearance_df["pitcher"].isin(eligible)]
+
+    if len(appearance_df) == 0:
+        return pd.DataFrame()
+
+    # empirical parameters
+    mu_league    = appearance_df["mean_xrv"].mean()
+    sigma_league = appearance_df.groupby("pitcher")["mean_xrv"].mean().std()
+    sigma_noise  = appearance_df["mean_xrv"].std()
+
+    # pitcher-level aggregation
+    pitcher_stats = (
+        appearance_df.groupby("pitcher")
+        .agg(mean_xrv=("mean_xrv", "mean"), n_appearances=("mean_xrv", "count"))
+        .reset_index()
+    )
+    pitcher_stats = pitcher_stats.merge(pitch_counts, on="pitcher", how="left")
+
+    # closed-form posterior
+    pitcher_stats["posterior_var"]  = 1 / (
+        1 / sigma_league**2 + pitcher_stats["n_appearances"] / sigma_noise**2
+    )
+    pitcher_stats["posterior_mean"] = pitcher_stats["posterior_var"] * (
+        mu_league / sigma_league**2
+        + pitcher_stats["n_appearances"] * pitcher_stats["mean_xrv"] / sigma_noise**2
+    )
+    pitcher_stats["posterior_std"]  = np.sqrt(pitcher_stats["posterior_var"])
+
+    return pitcher_stats[["pitcher", "pitch_count", "mean_xrv", "posterior_mean", "posterior_std"]]
+
+
 def add_names(leaderboard):
     """Add first/last name columns via ID lookup."""
     ids = leaderboard["pitcher"].values
@@ -322,27 +370,41 @@ def main():
     with tab1:
         st.subheader(f"Top {role}s — as of {as_of_date}")
         with st.spinner("Building leaderboard..."):
-            board = pitcher_leaderboard(df, as_of_date, role=role,
-                                        min_pitches=min_pitches, lam=lam)
-            board = add_names(board)
-            board = add_validation_metrics(board)
+            eb = compute_empirical_bayes(df, as_of_date, role=role,
+                                         min_pitches=min_pitches, lam=lam)
+            if eb.empty:
+                st.warning("Not enough data for current filters.")
+            else:
+                eb = add_names(eb)
+                eb = add_validation_metrics(eb)
+                eb = eb.sort_values("posterior_mean", ascending=True).reset_index(drop=True)
+                eb["Name"] = eb["name_first"].str.title() + " " + eb["name_last"].str.title()
+                eb["Rank"] = range(1, len(eb) + 1)
+                eb["Confidence"] = eb["posterior_std"].apply(
+                    lambda s: "🟢 High" if s < 0.002 else ("🟡 Medium" if s < 0.003 else "🔴 Low")
+                )
 
-        board["Name"] = board["name_first"].str.title() + " " + board["name_last"].str.title()
-        board["Rank"] = range(1, len(board) + 1)
+                display_cols = ["Rank", "Name", "posterior_mean", "mean_xrv",
+                                "pitch_count", "posterior_std", "Confidence"]
+                rename_map   = {
+                    "posterior_mean": "Posterior xRV ↓",
+                    "mean_xrv":       "Raw xRV",
+                    "pitch_count":    "Pitches",
+                    "posterior_std":  "Uncertainty",
+                }
+                for col in ["Stuff+", "SIERA"]:
+                    if col in eb.columns:
+                        display_cols.append(col)
 
-        display_cols = ["Rank", "Name", "weighted_xrv", "pitch_count"]
-        rename_map   = {"weighted_xrv": "Wtd xRV ↓", "pitch_count": "Pitches"}
-
-        for col in ["Stuff+", "SIERA"]:
-            if col in board.columns:
-                display_cols.append(col)
-
-        st.dataframe(
-            board[display_cols].rename(columns=rename_map).set_index("Rank"),
-            use_container_width=True,
-            height=600,
-        )
-        st.caption("↓ Lower Wtd xRV = better pitcher (fewer runs allowed per pitch)")
+                st.dataframe(
+                    eb[display_cols].rename(columns=rename_map).set_index("Rank"),
+                    use_container_width=True,
+                    height=600,
+                )
+                st.caption(
+                    "↓ Lower Posterior xRV = better pitcher. "
+                    "Confidence: 🟢 High (n≥33), 🟡 Medium, 🔴 Low (small sample — shrunk toward league avg)."
+                )
 
     # ── Tab 2: Trajectory ──────────────────────────────────────────────────────
     with tab2:
