@@ -92,7 +92,8 @@ def build_date_ranges(season: int) -> list:
     yesterday  = datetime.date.today() - datetime.timedelta(days=1)
     season_end = datetime.date(season, 9, 30)
     end_date   = min(yesterday, season_end)
-    month_starts = [datetime.date(season, m, 1) for m in range(4, 10)]
+    month_starts = ([datetime.date(season, 3, 20)] +
+                     [datetime.date(season, m, 1) for m in range(4, 10)])
     ranges = []
     for i, start in enumerate(month_starts):
         if start > end_date:
@@ -140,16 +141,42 @@ def build_features(df: pd.DataFrame, season: int,
     """
     print("  Building features...")
 
-    # xwOBA join
-    fg = batting_stats(season, qual=50)
-    fg.columns = [c.strip() for c in fg.columns]
-    xwoba_col = next((c for c in fg.columns if "woba" in c.lower() and "x" in c.lower()), "xwOBA")
-    lookup = playerid_reverse_lookup(df["batter"].unique())[["key_mlbam", "key_fangraphs"]]
-    lookup = lookup.rename(columns={"key_mlbam": "batter", "key_fangraphs": "IDfg"})
-    df = df.merge(lookup, on="batter", how="left")
-    df = df.merge(fg[["IDfg", xwoba_col]].rename(columns={xwoba_col: "xwOBA"}),
-                  on="IDfg", how="left")
-    df["xwOBA"] = df["xwOBA"].fillna(df["xwOBA"].mean())
+    # xwOBA join — cache FanGraphs data to avoid repeated scraping + 403s
+    fg_cache = os.path.join(DATA_DIR, f"fg_batters_{season}.parquet")
+    fg = None
+    if os.path.exists(fg_cache):
+        fg = pd.read_parquet(fg_cache)
+        print(f"  FanGraphs xwOBA loaded from cache")
+    else:
+        import time
+        for attempt in range(3):
+            try:
+                fg = batting_stats(season, qual=50)
+                fg.columns = [c.strip() for c in fg.columns]
+                os.makedirs(DATA_DIR, exist_ok=True)
+                fg.to_parquet(fg_cache, index=False)
+                print(f"  FanGraphs xwOBA cached to {fg_cache}")
+                break
+            except Exception as e:
+                if attempt < 2:
+                    print(f"  FanGraphs request failed ({e}), retrying in 30s...")
+                    time.sleep(30)
+                else:
+                    print("  FanGraphs unavailable -- using league-avg xwOBA imputation")
+
+    if fg is not None:
+        fg.columns = [c.strip() for c in fg.columns]
+        xwoba_col = next((c for c in fg.columns if "woba" in c.lower() and "x" in c.lower()), "xwOBA")
+        lookup = playerid_reverse_lookup(df["batter"].unique())[["key_mlbam", "key_fangraphs"]]
+        lookup = lookup.rename(columns={"key_mlbam": "batter", "key_fangraphs": "IDfg"})
+        df = df.merge(lookup, on="batter", how="left")
+        df = df.merge(fg[["IDfg", xwoba_col]].rename(columns={xwoba_col: "xwOBA"}),
+                      on="IDfg", how="left")
+    else:
+        df["xwOBA"] = np.nan  # will be filled with league avg below
+
+    # impute missing xwOBA with league average (0.320 if no data available)
+    df["xwOBA"] = df["xwOBA"].fillna(df["xwOBA"].mean() if df["xwOBA"].notna().any() else 0.320)
 
     # prev_pitch_type lag feature
     df = df.sort_values(["game_pk", "at_bat_number", "pitch_number"])
@@ -171,16 +198,26 @@ def build_features(df: pd.DataFrame, season: int,
     df["pitch_type_enc"]      = le.transform(df["pitch_type"].fillna("START"))
     df["prev_pitch_type_enc"] = le.transform(df["prev_pitch_type"])
 
-    # SP/RP classification: median pitches per appearance >= 50 -> SP
+    # SP/RP classification
+    # Use max pitches per appearance to handle small samples early in season.
+    # A pitcher who threw 80 pitches in any single game is a starter.
+    # median() fails early in season when sample size is 1-2 appearances.
     appearance = (
         df.groupby(["pitcher", "game_pk"])["pitch_number"].max().reset_index()
         .rename(columns={"pitch_number": "pitches_in_game"})
     )
     role_df = (
-        appearance.groupby("pitcher")["pitches_in_game"].median().reset_index()
-        .rename(columns={"pitches_in_game": "median_pitches"})
+        appearance.groupby("pitcher")["pitches_in_game"]
+        .agg(max_pitches="max", n_appearances="count")
+        .reset_index()
     )
-    role_df["role"] = role_df["median_pitches"].apply(lambda x: "SP" if x >= 50 else "RP")
+    # use max if fewer than 3 appearances (early season), median otherwise
+    role_df["rep_pitches"] = np.where(
+        role_df["n_appearances"] < 3,
+        role_df["max_pitches"],
+        appearance.groupby("pitcher")["pitches_in_game"].median().values
+    )
+    role_df["role"] = role_df["rep_pitches"].apply(lambda x: "SP" if x >= 50 else "RP")
     df = df.merge(role_df[["pitcher", "role"]], on="pitcher", how="left")
 
     # drop missing physics (MCAR, <1%)

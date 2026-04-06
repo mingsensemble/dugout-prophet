@@ -36,18 +36,23 @@ st.set_page_config(
 # ── Constants ──────────────────────────────────────────────────────────────────
 ARTIFACT_DIR    = "artifacts"
 DATA_DIR        = "data"
-CACHE_PATH      = os.path.join(DATA_DIR, "cache.parquet")
+# Cache path is season-aware — prevents stale prior-season data from loading silently
+def _current_season():
+    today = datetime.date.today()
+    return today.year if today >= datetime.date(today.year, 3, 20) else today.year - 1
+
+CACHE_PATH      = os.path.join(DATA_DIR, f"cache_{_current_season()}.parquet")
 MODEL_PATH      = os.path.join(ARTIFACT_DIR, "model.pt")
 SCALER_PATH     = os.path.join(ARTIFACT_DIR, "scaler.pkl")
 LE_PATH         = os.path.join(ARTIFACT_DIR, "le.pkl")
 CACHE_MAX_DAYS  = 7
-TRAIN_SEASON    = 2023
-CURRENT_SEASON  = datetime.date.today().year
+TRAIN_SEASON    = 2025
+CURRENT_SEASON  = _current_season()  # falls back to prior year before March 20
 LAM             = 0.046  # 14-day half-life
 
 STUFF_COLS  = ["release_speed", "pfx_x", "pfx_z", "release_spin_rate", "release_extension"]
 COMMAND_COLS = ["plate_x", "plate_z", "zone"]
-CONT_COLS   = STUFF_COLS + COMMAND_COLS + ["pitch_number_in_pa", "xwOBA"]
+CONT_COLS   = STUFF_COLS + COMMAND_COLS + ["pitch_number", "xwOBA"]
 FEATURES    = CONT_COLS + ["pitch_type_enc", "prev_pitch_type_enc"]
 TARGET      = "delta_run_exp"
 
@@ -57,7 +62,8 @@ def build_date_ranges(season: int) -> list:
     yesterday  = datetime.date.today() - datetime.timedelta(days=1)
     season_end = datetime.date(season, 9, 30)
     end_date   = min(yesterday, season_end)
-    month_starts = [datetime.date(season, m, 1) for m in range(4, 10)]
+    month_starts = ([datetime.date(season, 3, 20)] +
+                     [datetime.date(season, m, 1) for m in range(4, 10)])
     ranges = []
     for i, start in enumerate(month_starts):
         if start > end_date:
@@ -66,6 +72,19 @@ def build_date_ranges(season: int) -> list:
         chunk_end = min(month_end, end_date)
         ranges.append((start.strftime("%Y-%m-%d"), chunk_end.strftime("%Y-%m-%d")))
     return ranges
+
+
+
+def adaptive_min_pitches(as_of_date) -> int:
+    """
+    Dynamically lower min_pitches threshold early in the season.
+    Scales linearly from 20 pitches (April 1) to 100 pitches (June 1+).
+    """
+    season_start = pd.Timestamp(f"{pd.Timestamp(as_of_date).year}-03-20")
+    days_in      = max(0, (pd.Timestamp(as_of_date) - season_start).days)
+    # ramp from 20 to 100 over first 60 days (April + May)
+    threshold = int(np.clip(20 + (100 - 20) * days_in / 60, 20, 100))
+    return threshold
 
 
 # ── Model definition ───────────────────────────────────────────────────────────
@@ -124,18 +143,39 @@ def pull_statcast():
 
 def build_features(df, scaler, le):
     """Feature engineering pipeline."""
-    # xwOBA join
-    fg  = batting_stats(CURRENT_SEASON, qual=50)
-    fg.columns = [c.strip() for c in fg.columns]
-    xwoba_col = next((c for c in fg.columns if "woba" in c.lower() and "x" in c.lower()), None)
-    if xwoba_col is None:
-        xwoba_col = "xwOBA"
+    # xwOBA join — cache FanGraphs data to avoid repeated scraping + 403s
+    fg_cache = os.path.join(DATA_DIR, f"fg_batters_{CURRENT_SEASON}.parquet")
+    fg = None
+    if os.path.exists(fg_cache):
+        fg = pd.read_parquet(fg_cache)
+    else:
+        import time
+        for attempt in range(3):
+            try:
+                fg = batting_stats(CURRENT_SEASON, qual=50)
+                fg.columns = [c.strip() for c in fg.columns]
+                os.makedirs(DATA_DIR, exist_ok=True)
+                fg.to_parquet(fg_cache, index=False)
+                break
+            except Exception as e:
+                if attempt < 2:
+                    print(f"  FanGraphs request failed ({e}), retrying in 30s...")
+                    time.sleep(30)
+                else:
+                    print("  FanGraphs unavailable — using league-avg xwOBA imputation")
 
-    lookup = playerid_reverse_lookup(df["batter"].unique())[["key_mlbam", "key_fangraphs"]]
-    lookup = lookup.rename(columns={"key_mlbam": "batter", "key_fangraphs": "IDfg"})
-    df = df.merge(lookup, on="batter", how="left")
-    df = df.merge(fg[["IDfg", xwoba_col]].rename(columns={xwoba_col: "xwOBA"}), on="IDfg", how="left")
-    df["xwOBA"] = df["xwOBA"].fillna(df["xwOBA"].mean())
+    if fg is not None:
+        fg.columns = [c.strip() for c in fg.columns]
+        xwoba_col = next((c for c in fg.columns if "woba" in c.lower() and "x" in c.lower()), "xwOBA")
+        lookup = playerid_reverse_lookup(df["batter"].unique())[["key_mlbam", "key_fangraphs"]]
+        lookup = lookup.rename(columns={"key_mlbam": "batter", "key_fangraphs": "IDfg"})
+        df = df.merge(lookup, on="batter", how="left")
+        df = df.merge(fg[["IDfg", xwoba_col]].rename(columns={xwoba_col: "xwOBA"}),
+                      on="IDfg", how="left")
+    else:
+        df["xwOBA"] = np.nan
+
+    df["xwOBA"] = df["xwOBA"].fillna(df["xwOBA"].mean() if df["xwOBA"].notna().any() else 0.320)
 
     # prev pitch type
     df = df.sort_values(["game_pk", "at_bat_number", "pitch_number"])
@@ -155,15 +195,25 @@ def build_features(df, scaler, le):
     df = df.dropna(subset=FEATURES + [TARGET])
 
     # SP/RP classification
+    # Use max pitches per appearance to handle small samples early in season.
+    # A pitcher who threw 80 pitches in any single game is a starter.
+    # median() fails early in season when sample size is 1-2 appearances.
     appearance = (
         df.groupby(["pitcher", "game_pk"])["pitch_number"].max().reset_index()
         .rename(columns={"pitch_number": "pitches_in_game"})
     )
     role_df = (
-        appearance.groupby("pitcher")["pitches_in_game"].median().reset_index()
-        .rename(columns={"pitches_in_game": "median_pitches"})
+        appearance.groupby("pitcher")["pitches_in_game"]
+        .agg(max_pitches="max", n_appearances="count")
+        .reset_index()
     )
-    role_df["role"] = role_df["median_pitches"].apply(lambda x: "SP" if x >= 50 else "RP")
+    # use max if fewer than 3 appearances (early season), median otherwise
+    role_df["rep_pitches"] = np.where(
+        role_df["n_appearances"] < 3,
+        role_df["max_pitches"],
+        appearance.groupby("pitcher")["pitches_in_game"].median().values
+    )
+    role_df["role"] = role_df["rep_pitches"].apply(lambda x: "SP" if x >= 50 else "RP")
     df = df.merge(role_df[["pitcher", "role"]], on="pitcher", how="left")
 
     return df
@@ -339,11 +389,13 @@ def main():
     with st.sidebar:
         st.header("⚙️ Settings")
         role        = st.selectbox("Role", ["SP", "RP"], index=0)
-        min_pitches = st.slider("Min pitches", 50, 300, 100, step=25)
         lam         = st.slider("Decay λ (half-life)", 0.02, 0.10, LAM, step=0.005,
                                 help="Higher = faster decay. λ=0.046 → 14-day half-life")
         as_of_date  = st.date_input("As-of date", value=datetime.date.today())
         as_of_date  = pd.Timestamp(as_of_date)  # convert to Timestamp for datetime64 comparison
+        adaptive    = adaptive_min_pitches(as_of_date)
+        min_pitches = st.slider("Min pitches", 10, 300, adaptive, step=10,
+                                help=f"Auto-set to {adaptive} based on days into season")
 
         st.divider()
         if st.button("🔄 Refresh Data", use_container_width=True):
@@ -351,7 +403,7 @@ def main():
             st.session_state["force_refresh"] = True
 
         cache_status = "✅ Fresh" if is_cache_fresh() else "⚠️ Stale / Missing"
-        st.caption(f"Cache: {cache_status}")
+        st.caption(f"Cache: {cache_status} — Season {CURRENT_SEASON}")
 
     # ── Load data ──────────────────────────────────────────────────────────────
     force = st.session_state.pop("force_refresh", False)
@@ -370,6 +422,22 @@ def main():
     with tab1:
         st.subheader(f"Top {role}s — as of {as_of_date}")
         with st.spinner("Building leaderboard..."):
+            # diagnostic info
+            total_pitches = len(df)
+            season_pitches = len(df[df["game_date"] <= as_of_date])
+            role_pitches   = len(df[(df["game_date"] <= as_of_date) & (df["role"] == role)])
+            n_eligible     = len(df[(df["game_date"] <= as_of_date) & (df["role"] == role)]
+                                 .groupby("pitcher")["pred_xrv"].count()
+                                 .pipe(lambda s: s[s >= min_pitches]))
+            st.info(
+                f"Cache: {total_pitches:,} pitches total | "
+                f"As-of filter: {season_pitches:,} pitches | "
+                f"Role={role}: {role_pitches:,} pitches | "
+                f"Eligible (≥{min_pitches}): {n_eligible} pitchers | "
+                f"Date range: {df['game_date'].min().date()} → {df['game_date'].max().date()} | "
+                f"Roles in cache: {df['role'].value_counts().to_dict()}"
+            )
+
             eb = compute_empirical_bayes(df, as_of_date, role=role,
                                          min_pitches=min_pitches, lam=lam)
             if eb.empty:
