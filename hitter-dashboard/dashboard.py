@@ -18,19 +18,17 @@ def compute_risk_adjusted_score(df, alpha):
     return df['posterior_mean'] / (df['posterior_sd'] ** alpha)
 
 
-def plot_posterior_distributions(df, selected_players):
-    selected_df = df[df['player_name'].isin(selected_players)]
+def plot_posterior_distributions(posteriors, selected_batters):
+    selected_df = posteriors[posteriors['batter'].isin(selected_batters)]
     z = norm.ppf(0.95)
     x_min = (selected_df['posterior_mean'] - z * selected_df['posterior_sd']).min()
     x_max = (selected_df['posterior_mean'] + z * selected_df['posterior_sd']).max()
     x = np.linspace(x_min, x_max, 200)
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    for player in selected_players:
-        row = selected_df[selected_df['player_name'] == player]
-        if not row.empty:
-            ax.plot(x, norm.pdf(x, loc=row['posterior_mean'].values[0],
-                                scale=row['posterior_sd'].values[0]), label=player)
+    for _, row in selected_df.iterrows():
+        ax.plot(x, norm.pdf(x, loc=row['posterior_mean'], scale=row['posterior_sd']),
+                label=row['player_name'])
     ax.set_xlabel('xwOBA')
     ax.set_ylabel('Density')
     ax.set_title('Posterior Distributions — Selected Players')
@@ -83,74 +81,66 @@ def plot_shrinkage_evolution(player_df, player_name, params, lam):
 
 
 def main():
-    # temporarily add this as the very first line of main():
-    st.cache_data.clear()
     st.title("🔵 Hitter xwOBA Monitor")
 
+    # --- Sidebar controls ---
     lam = st.sidebar.slider("Decay λ", 0.001, 0.05, DEFAULT_LAMBDA, step=0.001)
     alpha = st.sidebar.slider("Risk Alpha", 0.0, 1.0, 0.5, step=0.05)
     min_pa = st.sidebar.slider("Min Effective PA", 0, 100, 10, step=5)
 
+    # refresh button
+    if st.sidebar.button("🔄 Refresh Data"):
+        st.cache_data.clear()
+        st.rerun()
+
+    # --- Data pipeline ---
     raw = load_data(LOOKBACK_YEARS)
-    # st.write(f"weight sample: {raw['weight'].describe() if 'weight' in raw.columns else 'weight column NOT in raw'}")
-    # st.write(f"raw rows: {len(raw)}")
-    # st.write(f"days_ago range: {raw['days_ago'].min()} to {raw['days_ago'].max()}")
-    # st.write(f"days_ago range: {raw['days_ago'].min()} to {raw['days_ago'].max()}")
-    # st.write(f"LOOKBACK_YEARS being used: {LOOKBACK_YEARS}")
-
     weighted = compute_weights(raw, lam)
-    # st.write(f"weighted rows: {len(weighted)}")
-    # st.write(f"columns in weighted: {weighted.columns.tolist()}")
-    # st.write(f"weight stats: {weighted['weight'].describe()}")
-    # st.write(f"unique batters in weighted: {weighted['batter'].nunique()}")
-    # st.write(f"unique player_names in weighted: {weighted['player_name'].nunique()}")
-    # st.write(f"sample batter values: {weighted['batter'].head(10).tolist()}")
-    # st.write(f"sample player_name values: {weighted['player_name'].head(10).tolist()}")
-    # st.write(f"unique batters: {weighted['batter'].nunique()}")
-    # st.write(f"unique player_names: {weighted['player_name'].nunique()}")
-    # st.write(f"player_name nulls: {weighted['player_name'].isnull().sum()}")
-    # st.write(f"sample player_names: {weighted['player_name'].head(10).tolist()}")
-
     player_stats = compute_player_stats(weighted)
-    # st.write(f"player_stats rows: {len(player_stats)}")
-    # st.write(player_stats.head())
-    # st.write(f"n_eff stats: {player_stats['n_eff'].describe()}")
-    # st.write(f"players with n_eff >= 50: {(player_stats['n_eff'] >= 50).sum()}")
-
     params = estimate_population_params(player_stats)
-    # st.write(f"params: {params}")
-
-
     posteriors = compute_posteriors(player_stats, params)
-    # st.write(f"posteriors rows: {len(posteriors)}")
-    # st.write(posteriors.head())
-
     posteriors['risk_adjusted_score'] = compute_risk_adjusted_score(posteriors, alpha)
 
-    selected_players = st.multiselect(
-        "Select players for comparison",
-        options=sorted(posteriors['player_name'].tolist())
-    )
-    # compute PA count and actual wOBA per player
+    # --- PA / xwOBA / wOBA stats ---
     pa_stats = raw.groupby('batter').agg(
         PA=('estimated_woba_using_speedangle', 'count'),
         xwOBA=('estimated_woba_using_speedangle', 'mean'),
-        wOBA=('woba_value', 'mean')
+        wOBA=('woba_value', lambda x: x.dropna().mean())
     ).reset_index()
     posteriors = posteriors.merge(pa_stats, on='batter', how='left')
 
-    display_df = posteriors[posteriors['n_eff'] >= min_pa][
-        ['player_name', 'PA', 'xwOBA', 'wOBA', 'n_eff', 'xwoba_weighted_mean',
-         'posterior_mean', 'posterior_sd', 'ci_low', 'ci_high', 'risk_adjusted_score']
-    ].sort_values('risk_adjusted_score', ascending=False)
+    # --- Player selector (unique by batter ID) ---
+    posteriors['display_label'] = (
+        posteriors['player_name'] + ' (' + posteriors['batter'].astype(str) + ')'
+    )
+    selected_labels = st.multiselect(
+        "Select Players for Comparison",
+        options=sorted(posteriors['display_label'].tolist())
+    )
+    selected_batters = [
+        int(label.split('(')[-1].rstrip(')'))
+        for label in selected_labels
+    ]
 
-    st.dataframe(display_df)
+    # --- Ranked table ---
+    display_df = posteriors[posteriors['n_eff'] >= min_pa][[
+        'batter', 'player_name', 'PA', 'xwOBA', 'wOBA',
+        'posterior_mean', 'posterior_sd',
+        'ci_low', 'ci_high', 'risk_adjusted_score'
+    ]].sort_values('risk_adjusted_score', ascending=False)
 
-    if selected_players:
-        plot_posterior_distributions(posteriors, selected_players)
-        for player in selected_players:
-            player_df = raw[raw['player_name'] == player]
-            plot_shrinkage_evolution(player_df, player, params, lam)
+    if selected_batters:
+        display_df = display_df[display_df['batter'].isin(selected_batters)]
+
+    st.dataframe(display_df.drop(columns=['batter']))
+
+    # --- Plots ---
+    if selected_batters:
+        plot_posterior_distributions(posteriors, selected_batters)
+        for batter_id in selected_batters:
+            player_df = raw[raw['batter'] == batter_id]
+            player_name = posteriors[posteriors['batter'] == batter_id]['player_name'].values[0]
+            plot_shrinkage_evolution(player_df, player_name, params, lam)
 
 
 if __name__ == "__main__":

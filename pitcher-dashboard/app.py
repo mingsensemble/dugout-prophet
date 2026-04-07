@@ -19,7 +19,6 @@ import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from scipy.stats import spearmanr
 
 import torch
 import torch.nn as nn
@@ -46,7 +45,7 @@ MODEL_PATH      = os.path.join(ARTIFACT_DIR, "model.pt")
 SCALER_PATH     = os.path.join(ARTIFACT_DIR, "scaler.pkl")
 LE_PATH         = os.path.join(ARTIFACT_DIR, "le.pkl")
 CACHE_MAX_DAYS  = 7
-TRAIN_SEASON    = 2025
+TRAIN_SEASON    = 2023
 CURRENT_SEASON  = _current_season()  # falls back to prior year before March 20
 LAM             = 0.046  # 14-day half-life
 
@@ -264,19 +263,6 @@ def pitcher_score(df, pitcher_id, as_of_date, lam=LAM):
     return (sub["weight"] * sub["pred_xrv"]).sum() / sub["weight"].sum()
 
 
-def pitcher_leaderboard(df, as_of_date, role="SP", min_pitches=100, lam=LAM):
-    sub = df[(df["game_date"] <= as_of_date) & (df["role"] == role)]
-    eligible = (
-        sub.groupby("pitcher")["pred_xrv"].count().reset_index()
-        .rename(columns={"pred_xrv": "pitch_count"})
-    )
-    eligible = eligible[eligible["pitch_count"] >= min_pitches].copy()
-    eligible["weighted_xrv"] = eligible["pitcher"].apply(
-        lambda pid: pitcher_score(df, pid, as_of_date, lam)
-    )
-    return eligible.sort_values("weighted_xrv", ascending=True)
-
-
 def pitcher_trajectory(df, pitcher_id, dates, lam=LAM):
     records = []
     for date in dates:
@@ -285,7 +271,7 @@ def pitcher_trajectory(df, pitcher_id, dates, lam=LAM):
             score = pitcher_score(df, pitcher_id, date, lam)
             records.append({"date": date, "weighted_xrv": score})
     traj = pd.DataFrame(records)
-    if len(traj) > 1:
+    if len(traj) >= 4:  # need at least 4 points for meaningful EWM smoothing
         traj["smoothed_xrv"] = traj["weighted_xrv"].ewm(span=4).mean()
     return traj
 
@@ -363,7 +349,7 @@ def add_validation_metrics(leaderboard):
         lookup = playerid_reverse_lookup(leaderboard["pitcher"].values)[["key_mlbam", "key_fangraphs"]]
         lookup = lookup.rename(columns={"key_mlbam": "pitcher", "key_fangraphs": "IDfg"})
         merged = leaderboard.merge(lookup, on="pitcher", how="left")
-        cols   = ["IDfg"] + [c for c in ["Stuff+", "SIERA"] if c in ps.columns]
+        cols   = ["IDfg"] + [c for c in ["Stuff+", "SIERA", "K%", "BB%"] if c in ps.columns]
         merged = merged.merge(ps[cols], on="IDfg", how="left")
         return merged
     except Exception:
@@ -391,6 +377,8 @@ def main():
         role        = st.selectbox("Role", ["SP", "RP"], index=0)
         lam         = st.slider("Decay λ (half-life)", 0.02, 0.10, LAM, step=0.005,
                                 help="Higher = faster decay. λ=0.046 → 14-day half-life")
+        alpha       = st.slider("Risk α", 0.0, 1.0, 0.5, step=0.1,
+                                help="0 = rank by posterior mean only | 1 = full Sharpe ratio (mean/std)")
         as_of_date  = st.date_input("As-of date", value=datetime.date.today())
         as_of_date  = pd.Timestamp(as_of_date)  # convert to Timestamp for datetime64 comparison
         adaptive    = adaptive_min_pitches(as_of_date)
@@ -416,7 +404,7 @@ def main():
     df["game_date"] = pd.to_datetime(df["game_date"])
 
     # ── Tabs ───────────────────────────────────────────────────────────────────
-    tab1, tab2, tab3 = st.tabs(["📋 Leaderboard", "📈 Trajectory", "🔬 Validation"])
+    tab1, tab2 = st.tabs(["📋 Leaderboard", "📈 Trajectory"])
 
     # ── Tab 1: Leaderboard ─────────────────────────────────────────────────────
     with tab1:
@@ -429,14 +417,14 @@ def main():
             n_eligible     = len(df[(df["game_date"] <= as_of_date) & (df["role"] == role)]
                                  .groupby("pitcher")["pred_xrv"].count()
                                  .pipe(lambda s: s[s >= min_pitches]))
-            st.info(
-                f"Cache: {total_pitches:,} pitches total | "
-                f"As-of filter: {season_pitches:,} pitches | "
-                f"Role={role}: {role_pitches:,} pitches | "
-                f"Eligible (≥{min_pitches}): {n_eligible} pitchers | "
-                f"Date range: {df['game_date'].min().date()} → {df['game_date'].max().date()} | "
-                f"Roles in cache: {df['role'].value_counts().to_dict()}"
-            )
+            # st.info(
+            #     f"Cache: {total_pitches:,} pitches total | "
+            #     f"As-of filter: {season_pitches:,} pitches | "
+            #     f"Role={role}: {role_pitches:,} pitches | "
+            #     f"Eligible (≥{min_pitches}): {n_eligible} pitchers | "
+            #     f"Date range: {df['game_date'].min().date()} → {df['game_date'].max().date()} | "
+            #     f"Roles in cache: {df['role'].value_counts().to_dict()}"
+            # )
 
             eb = compute_empirical_bayes(df, as_of_date, role=role,
                                          min_pitches=min_pitches, lam=lam)
@@ -445,34 +433,90 @@ def main():
             else:
                 eb = add_names(eb)
                 eb = add_validation_metrics(eb)
-                eb = eb.sort_values("posterior_mean", ascending=True).reset_index(drop=True)
+                # risk-adjusted score: posterior_mean / posterior_std^alpha
+                # alpha=0 -> rank by posterior mean only
+                # alpha=1 -> full Sharpe ratio (penalizes uncertainty heavily)
+                eb["risk_adj_score"] = eb["posterior_mean"] / (eb["posterior_std"] ** alpha)
+                eb = eb.sort_values("risk_adj_score", ascending=True).reset_index(drop=True)
                 eb["Name"] = eb["name_first"].str.title() + " " + eb["name_last"].str.title()
                 eb["Rank"] = range(1, len(eb) + 1)
+                # K%-BB% combined column
+                if "K%" in eb.columns and "BB%" in eb.columns:
+                    eb["K%-BB%"] = (eb["K%"] - eb["BB%"]).round(3)
                 eb["Confidence"] = eb["posterior_std"].apply(
                     lambda s: "🟢 High" if s < 0.002 else ("🟡 Medium" if s < 0.003 else "🔴 Low")
                 )
 
-                display_cols = ["Rank", "Name", "posterior_mean", "mean_xrv",
-                                "pitch_count", "posterior_std", "Confidence"]
+                # pitcher filter
+                all_names = eb["Name"].tolist()
+                selected = st.multiselect(
+                    "Filter to specific pitchers (leave empty to show all)",
+                    options=all_names,
+                    default=[],
+                    placeholder="Type a name to search...",
+                )
+                display_eb = eb[eb["Name"].isin(selected)] if selected else eb
+
+                display_cols = ["Rank", "Name", "risk_adj_score", "posterior_mean",
+                                "mean_xrv", "pitch_count", "posterior_std", "Confidence"]
                 rename_map   = {
-                    "posterior_mean": "Posterior xRV ↓",
-                    "mean_xrv":       "Raw xRV",
-                    "pitch_count":    "Pitches",
-                    "posterior_std":  "Uncertainty",
+                    "risk_adj_score":  f"Risk-Adj xRV (α={alpha}) ↓",
+                    "posterior_mean":  "Posterior xRV",
+                    "mean_xrv":        "Raw xRV",
+                    "pitch_count":     "Pitches",
+                    "posterior_std":   "Uncertainty",
                 }
-                for col in ["Stuff+", "SIERA"]:
+                for col in ["Stuff+", "SIERA", "K%-BB%"]:
                     if col in eb.columns:
                         display_cols.append(col)
 
                 st.dataframe(
-                    eb[display_cols].rename(columns=rename_map).set_index("Rank"),
+                    display_eb[display_cols].rename(columns=rename_map).set_index("Rank"),
                     use_container_width=True,
                     height=600,
                 )
                 st.caption(
-                    "↓ Lower Posterior xRV = better pitcher. "
-                    "Confidence: 🟢 High (n≥33), 🟡 Medium, 🔴 Low (small sample — shrunk toward league avg)."
+                    f"↓ Lower Risk-Adj xRV = better pitcher. "
+                    f"α={alpha}: 0=ignore uncertainty, 1=full Sharpe ratio. "
+                    "Confidence: 🟢 High, 🟡 Medium, 🔴 Low (small sample — shrunk toward league avg)."
                 )
+
+                # ── Posterior distribution plot ────────────────────────────
+                st.subheader("Posterior xRV Distribution")
+                st.caption("Compare uncertainty across selected pitchers. Wider = less confident. Lower = better.")
+
+                plot_names = selected if selected else display_eb["Name"].head(10).tolist()
+                plot_df    = eb[eb["Name"].isin(plot_names)].copy()
+
+                if not plot_df.empty:
+                    fig2, ax2 = plt.subplots(figsize=(10, 4))
+                    fig2.patch.set_facecolor("#0e1117")
+                    ax2.set_facecolor("#0e1117")
+
+                    x = np.linspace(
+                        plot_df["posterior_mean"].min() - 4 * plot_df["posterior_std"].max(),
+                        plot_df["posterior_mean"].max() + 4 * plot_df["posterior_std"].max(),
+                        500
+                    )
+                    cmap   = plt.cm.get_cmap("tab10", len(plot_df))
+                    colors = [cmap(i) for i in range(len(plot_df))]
+
+                    for (_, row), color in zip(plot_df.iterrows(), colors):
+                        mu, sigma = row["posterior_mean"], row["posterior_std"]
+                        pdf = (1 / (sigma * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x - mu) / sigma) ** 2)
+                        ax2.plot(x, pdf, color=color, linewidth=2, label=row["Name"])
+                        ax2.fill_between(x, pdf, alpha=0.08, color=color)
+                        ax2.axvline(mu, color=color, linewidth=1, linestyle="--", alpha=0.5)
+
+                    ax2.axvline(0, color="white", linewidth=0.5, linestyle=":", alpha=0.3)
+                    ax2.set_xlabel("Posterior xRV (lower = better)", color="white")
+                    ax2.set_ylabel("Density", color="white")
+                    ax2.tick_params(colors="white")
+                    ax2.spines[:].set_color("#333")
+                    ax2.legend(facecolor="#1a1a2e", labelcolor="white", fontsize=8,
+                               loc="upper right", ncol=2)
+                    plt.tight_layout()
+                    st.pyplot(fig2)
 
     # ── Tab 2: Trajectory ──────────────────────────────────────────────────────
     with tab2:
@@ -550,8 +594,13 @@ def main():
                     continue
                 ax.plot(traj["date"], traj["weighted_xrv"],
                         alpha=0.3, color=color, linewidth=1)
-                ax.plot(traj["date"], traj["smoothed_xrv"],
-                        color=color, linewidth=2.5, label=label)
+                if "smoothed_xrv" in traj.columns:
+                    ax.plot(traj["date"], traj["smoothed_xrv"],
+                            color=color, linewidth=2.5, label=label)
+                else:
+                    # not enough data points for EWM smoothing — plot raw only
+                    ax.plot(traj["date"], traj["weighted_xrv"],
+                            color=color, linewidth=2.5, label=f"{label} (raw)")
 
             ax.axhline(0, linestyle="--", color="#555", alpha=0.6)
             ax.xaxis.set_major_formatter(mdates.DateFormatter("%b"))
@@ -562,53 +611,6 @@ def main():
             plt.tight_layout()
             st.pyplot(fig)
             st.caption("Solid line = EWM smoothed (span=4 weeks). Faint line = raw weekly score.")
-
-    # ── Tab 3: Validation ──────────────────────────────────────────────────────
-    with tab3:
-        st.subheader("Model Validation vs FanGraphs Metrics")
-        with st.spinner("Computing correlations..."):
-            board_val = pitcher_leaderboard(df, as_of_date, role="SP",
-                                            min_pitches=min_pitches, lam=lam)
-            board_val = add_validation_metrics(board_val)
-
-        results = []
-        for metric, direction in [("Stuff+", "neg"), ("SIERA", "pos")]:
-            if metric not in board_val.columns:
-                continue
-            clean = board_val.dropna(subset=[metric, "weighted_xrv"])
-            if len(clean) < 10:
-                continue
-            r, p = spearmanr(clean["weighted_xrv"], clean[metric])
-            results.append({"Metric": metric, "Spearman r": round(r, 3),
-                             "p-value": f"{p:.4f}", "n": len(clean),
-                             "Expected sign": direction})
-
-        if results:
-            st.dataframe(pd.DataFrame(results).set_index("Metric"), use_container_width=True)
-            st.caption(
-                "Stuff+: expect negative r (higher Stuff+ = better = lower xRV). "
-                "SIERA: expect positive r (higher SIERA = worse = higher xRV)."
-            )
-
-            # scatter plots
-            for metric in ["Stuff+", "SIERA"]:
-                if metric not in board_val.columns:
-                    continue
-                clean = board_val.dropna(subset=[metric, "weighted_xrv"])
-                fig, ax = plt.subplots(figsize=(6, 4))
-                fig.patch.set_facecolor("#0e1117")
-                ax.set_facecolor("#0e1117")
-                ax.scatter(clean["weighted_xrv"], clean[metric],
-                           alpha=0.6, color="#4fc3f7", s=20)
-                ax.set_xlabel("Weighted xRV", color="white")
-                ax.set_ylabel(metric, color="white")
-                ax.tick_params(colors="white")
-                ax.spines[:].set_color("#333")
-                ax.set_title(f"xRV vs {metric}", color="white")
-                plt.tight_layout()
-                st.pyplot(fig)
-        else:
-            st.info("Could not compute validation metrics — FanGraphs data may be unavailable.")
 
 
 if __name__ == "__main__":
