@@ -130,17 +130,17 @@ class MVTPitcherPredictionDataSet(Dataset):
         required_cols = self.features + [self.player_col, self.season_col]
 
         data_processed = data.reindex(columns=[c for c in data.columns if c in required_cols]).fillna(0)
-        grouped = data_processed.groupby('IDfg')
+        grouped = data_processed.groupby(self.player_col)
 
 
         for player_id, player_data in grouped:
             # Sort by season
-            player_data = player_data.sort_values('Season').reset_index(drop=True)
-            
+            player_data = player_data.sort_values(self.season_col).reset_index(drop=True)
+
             # Check if player has data for pred_season
-            if pred_season in player_data['Season'].values:
+            if pred_season in player_data[self.season_col].values:
                 # Find the index of pred_season
-                pred_idx = player_data[player_data['Season'] == pred_season].index[0]
+                pred_idx = player_data[player_data[self.season_col] == pred_season].index[0]
                 
                 # Build sequence using data up to pred_season
                 seq_length = min(nlookbacks, pred_idx + 1)
@@ -177,11 +177,12 @@ class MVTPitcherPredictionDataSet(Dataset):
         return pred_sequences, pred_metadata_df
 
 class MVTPitcherModel(nn.Module):
-    def __init__(self, input_dim, num_features, d_model=64, nhead=4, num_layers=2, dim_feedforward=128, dropout=0.1, seq_len=5):
+    def __init__(self, input_dim, num_features, d_model=64, nhead=4, num_layers=2, dim_feedforward=128, dropout=0.1, seq_len=5,
+                 head_hidden1=256, head_hidden2=128):
         """
         Flexible Transformer model for predicting next-year values of all features and WAR.
         WAR prediction depends on predictions of all other features.
-        
+
         Args:
             input_dim: Number of features (pitcher statistics)
             num_features: Number of features to predict (length of features list)
@@ -191,6 +192,8 @@ class MVTPitcherModel(nn.Module):
             dim_feedforward: Dimension of feedforward network
             dropout: Dropout rate
             seq_len: Length of input sequences (lookback window)
+            head_hidden1: Hidden size of first layer in prediction heads
+            head_hidden2: Hidden size of second layer in prediction heads
         """
         super(MVTPitcherModel, self).__init__()
         
@@ -218,27 +221,27 @@ class MVTPitcherModel(nn.Module):
         # Prediction heads for each feature (independent)
         self.feature_heads = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(d_model * seq_len, 256),
+                nn.Linear(d_model * seq_len, head_hidden1),
                 nn.ReLU(),
                 nn.Dropout(dropout),
-                nn.Linear(256, 128),
+                nn.Linear(head_hidden1, head_hidden2),
                 nn.ReLU(),
                 nn.Dropout(dropout),
-                nn.Linear(128, 1)
+                nn.Linear(head_hidden2, 1)
             )
             for _ in range(num_features)
         ])
-        
+
         # WAR prediction head (depends on transformer output + all predicted features)
         # Takes d_model * seq_len features + num_features for all feature predictions
         self.war_head = nn.Sequential(
-            nn.Linear(d_model * seq_len + num_features, 256),
+            nn.Linear(d_model * seq_len + num_features, head_hidden1),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(256, 128),
+            nn.Linear(head_hidden1, head_hidden2),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(128, 1)
+            nn.Linear(head_hidden2, 1)
         )
     
     def forward(self, x):

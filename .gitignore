@@ -1,13 +1,24 @@
+## Data & large binaries
 data/
-results/
-
-*.pkl
-*.pt
 *.csv
 
-.DS_Store
-.ipynb_checkpoints/
-__pycache__
-archive/
+## Model artifacts (binaries and scalers — keep metadata.json)
+*.pt
+*.pkl
+models/**/*.pt
+models/**/*.pkl
 
-summarize-2026-predictions.ipynb
+## MLflow tracking store
+mlruns/
+
+## Python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+## macOS
+.DS_Store
+
+## Archive
+archive/
