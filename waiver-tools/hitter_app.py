@@ -90,7 +90,8 @@ MANUAL_ID_TO_NAME = {
     802139: "JJ Wetherholt", 805300: "Jakob Marsee",
     805808: "Kevin McGonigle", 808959: "Munetaka Murakami",
     679529: "Spencer Torkelson", 800050: "Chase DeLauter",
-    683357: 'Owen Caissie',
+    683357: "Owen Caissie", 701807: "Carson Benge",
+    702222: "Justin Crawford", 
 }
 
 # ── Data helpers ──────────────────────────────────────────────────────────────

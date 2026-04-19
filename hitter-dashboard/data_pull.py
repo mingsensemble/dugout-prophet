@@ -26,6 +26,18 @@ MANUAL_ID_TO_NAME = {
     665052: "Griffin Conine",
     687221: "Dalton Rushing",
     624413: "Pete Alonso",
+    608070: "José Ramírez",   608324: "Alex Bregman",
+    621493: "Taylor Ward",    624413: "Pete Alonso",
+    665742: "Juan Soto",      666182: "Bo Bichette",
+    686948: "Drake Baldwin",  691777: "Max Muncy",
+    691781: "Brady House",    695578: "James Wood",
+    695657: "Colson Montgomery", 695734: "Daylen Lile",
+    701350: "Roman Anthony",  701398: "Sal Stewart",
+    802139: "JJ Wetherholt", 805300: "Jakob Marsee",
+    805808: "Kevin McGonigle", 808959: "Munetaka Murakami",
+    679529: "Spencer Torkelson", 800050: "Chase DeLauter",
+    683357: "Owen Caissie", 701807: "Carson Benge",
+    702222: "Justin Crawford", 
 }
 
 CACHE_DIR = "data"
