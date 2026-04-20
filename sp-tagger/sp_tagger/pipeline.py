@@ -140,6 +140,7 @@ def _tag_dist_str(tag_probs: dict[str, float]) -> str:
     """Format tag distribution as 'Ace 71% | VA 22% | WH 6% | CB 1%'."""
     abbrevs = {
         "Ace": "Ace",
+        "Ace Potential": "AP",
         "Volatile Ace": "VA",
         "Workhorse": "WH",
         "Cherry Bomb": "CB",
