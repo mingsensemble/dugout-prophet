@@ -144,6 +144,7 @@ def _tag_dist_str(tag_probs: dict[str, float]) -> str:
         "Volatile Ace": "VA",
         "Workhorse": "WH",
         "Cherry Bomb": "CB",
+        "Toby": "TB",
     }
     parts = sorted(tag_probs.items(), key=lambda x: -x[1])
     return " | ".join(
@@ -324,6 +325,7 @@ def main() -> None:
         console.print(f"  Processing {name}…", end=" ")
         try:
             result = process_pitcher(name, cfg, args.week, args.date)
+            result["Type"] = result["roster_type"]
             all_results.append(result)
             console.print(
                 f"[green]✓[/green] {result['n_starts']} starts, "
