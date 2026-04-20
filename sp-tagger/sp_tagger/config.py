@@ -14,10 +14,10 @@ ROSTER = {
         'team': "TBR",
         "roster_type": "on_roster",
         "prior_overrides": {
-            "bb_pct": {"mean": 0.063, "strength": 20},  
-            "k_pct":  {"mean": 0.234, "strength": 20},  
+            "bb_pct": {"mean": 0.065, "strength": 15},  
+            "k_pct":  {"mean": 0.233, "strength": 15},  
             "hr_fb":  {"mean": 0.100, "strength": 15},  
-            "gb_pct": {"mean": 0.486, "strength": 30},  
+            "gb_pct": {"mean": 0.487, "strength": 15},  
         },
     },
     "Glasnow": {
@@ -25,10 +25,10 @@ ROSTER = {
         'team': 'LAD',
         "roster_type": "on_roster",
         "prior_overrides": {
-            "bb_pct": {"mean": 0.093, "strength": 20},
+            "bb_pct": {"mean": 0.094, "strength": 20},
             "k_pct":  {"mean": 0.309, "strength": 20},  
-            "hr_fb":  {"mean": 0.149, "strength": 15},  
-            "gb_pct": {"mean": 0.469, "strength": 30},  
+            "hr_fb":  {"mean": 0.150, "strength": 15},  
+            "gb_pct": {"mean": 0.471, "strength": 30},  
         }
     },
     "Gray": {
@@ -37,9 +37,9 @@ ROSTER = {
         "roster_type": "on_roster",
         "prior_overrides": {
             "bb_pct": {"mean": 0.078, "strength": 20},  
-            "k_pct":  {"mean": 0.241, "strength": 20},  
+            "k_pct":  {"mean": 0.242, "strength": 20},  
             "hr_fb":  {"mean": 0.121, "strength": 15},  
-            "gb_pct": {"mean": 0.498, "strength": 30}, 
+            "gb_pct": {"mean": 0.497, "strength": 30}, 
         }
     },
     "McClanahan": {
@@ -48,10 +48,10 @@ ROSTER = {
         "roster_type": "on_roster",
         # Pre-TJS 2022–23 baseline is more informative than a missing 2025 season.
         "prior_overrides": {
-            "bb_pct": {"mean": 0.075, "strength": 15},  
-            "k_pct":  {"mean": 0.278, "strength": 15},  
-            "hr_fb":  {"mean": 0.142, "strength": 15},  
-            "gb_pct": {"mean": 0.466, "strength": 15},  
+            "bb_pct": {"mean": 0.071, "strength": 15},  
+            "k_pct":  {"mean": 0.280, "strength": 15},  
+            "hr_fb":  {"mean": 0.145, "strength": 15},  
+            "gb_pct": {"mean": 0.468, "strength": 15},  
         }
     },
     "Bradish": {
@@ -59,10 +59,10 @@ ROSTER = {
         "team": "BAL",
         "roster_type": "on_roster",
         "prior_overrides": {
-            "bb_pct": {"mean": 0.081, "strength": 15},  
-            "k_pct":  {"mean": 0.259, "strength": 15},  
-            "hr_fb":  {"mean": 0.116, "strength": 15},  
-            "gb_pct": {"mean": 0.474, "strength": 15}, 
+            "bb_pct": {"mean": 0.078, "strength": 15},  
+            "k_pct":  {"mean": 0.258, "strength": 15},  
+            "hr_fb":  {"mean": 0.117, "strength": 15},  
+            "gb_pct": {"mean": 0.473, "strength": 15}, 
         }
     },
 
@@ -71,9 +71,9 @@ ROSTER = {
         "team": "TEX",
         "roster_type": "on_roster",
         "prior_overrides": {
-            "bb_pct": {"mean": 0.066, "strength": 20},  
-            "k_pct":  {"mean": 0.210, "strength": 20}, 
-            "hr_fb":  {"mean": 0.115, "strength": 15},  
+            "bb_pct": {"mean": 0.065, "strength": 20},  
+            "k_pct":  {"mean": 0.209, "strength": 20}, 
+            "hr_fb":  {"mean": 0.114, "strength": 15},  
             "gb_pct": {"mean": 0.470, "strength": 30},  
         }        
     },
@@ -82,10 +82,10 @@ ROSTER = {
         "team": "MIA",
         "roster_type": "on_roster",
         "prior_overrides": {
-            "bb_pct": {"mean": 0.087, "strength": 15},  
-            "k_pct":  {"mean": 0.274, "strength": 15},  
-            "hr_fb":  {"mean": 0.111, "strength": 15},  
-            "gb_pct": {"mean": 0.289, "strength": 15}, 
+            "bb_pct": {"mean": 0.083, "strength": 15},  
+            "k_pct":  {"mean": 0.281, "strength": 15},  
+            "hr_fb":  {"mean": 0.108, "strength": 15},  
+            "gb_pct": {"mean": 0.283, "strength": 15}, 
         }     
    },
 # monitoring
@@ -94,31 +94,38 @@ ROSTER = {
         "team": "BOS",
         "roster_type": "monitoring",
     },
-    "Nelson": {
-        "mlbam_id": 669194,
-        "team": "AZ",
-        "roster_type": "monitoring",
-        "prior_overrides": {
-            "bb_pct": {"mean": 0.067, "strength": 20},  
-            "k_pct":  {"mean": 0.192, "strength": 20},  
-            "hr_fb":  {"mean": 0.105, "strength": 15},  
-            "gb_pct": {"mean": 0.386, "strength": 30}, 
-        }  
-    },
     "Abel": {
         "mlbam_id": 690953,
         "team": "MIN",
         "roster_type": "monitoring",
+        "prior_overrides": {
+            "bb_pct": {"mean": 0.097, "strength": 15},  
+            "k_pct":  {"mean": 0.232, "strength": 15},  
+            "hr_fb":  {"mean": 0.116, "strength": 15},  
+            "gb_pct": {"mean": 0.370, "strength": 15}, 
+        }  
     },
     "Detmers": {
         "mlbam_id": 672282,
         "team": "LAA",
         "roster_type": "monitoring",
-    },
+        "prior_overrides": {
+            "bb_pct": {"mean": 0.093, "strength": 15},  
+            "k_pct":  {"mean": 0.257, "strength": 15},  
+            "hr_fb":  {"mean": 0.123, "strength": 15},  
+            "gb_pct": {"mean": 0.377, "strength": 15}, 
+        }  
+   },
     "Roupp": {
         "mlbam_id": 694738,
         "team": "SFG",
         "roster_type": "monitoring",
+        "prior_overrides": {
+            "bb_pct": {"mean": 0.102, "strength": 15},  
+            "k_pct":  {"mean": 0.215, "strength": 15},  
+            "hr_fb":  {"mean": 0.088, "strength": 15},  
+            "gb_pct": {"mean": 0.458, "strength": 15}, 
+        }  
     },    
 
 # benchmark players for calibration and comparison
