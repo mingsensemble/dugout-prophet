@@ -1,22 +1,26 @@
 """
-fg_batting.py — Fetch FanGraphs team batting leaderboards split by pitcher handedness (vs LHP / vs RHP).
+fg_batting.py — Fetch FanGraphs team batting leaderboards split by pitcher handedness and venue.
+
+Fetched splits: vs_lhp, vs_rhp, home, away
+Derived cross-splits: home_vs_lhp, home_vs_rhp, away_vs_lhp, away_vs_rhp
 
 Usage:
-    python fg_batting.py                    # prints both splits
+    python fg_batting.py                    # print merged + cross-split table
     python fg_batting.py --season 2026      # explicit season
-    python fg_batting.py --out batting.csv  # write merged CSV
+    python fg_batting.py --out batting.csv  # write full CSV
 """
-
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from typing import Optional
 
 import pandas as pd
 import requests
-
+from dotenv import load_dotenv
+load_dotenv()
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -26,10 +30,12 @@ FG_API = "https://www.fangraphs.com/api/leaders/major-league/data"
 SPLITS: dict[str, int] = {
     "vs_lhp": 13,   # split vs left-handed pitchers
     "vs_rhp": 14,   # split vs right-handed pitchers
+    "home":   15,   # home games
+    "away":   16,   # away games
 }
 
 # Team-level columns to keep
-KEEP_COLS = ["Team", "TG", "K%", "BB%", "xwOBA", "wOBA"]
+KEEP_COLS = ["Team", "TG", "PA", "K%", "BB%", "xwOBA", "wOBA"]
 
 ID_COLS = ["Team"]
 
@@ -54,18 +60,36 @@ _BASE_PARAMS: dict[str, str | int] = {
 # Fetch
 # ---------------------------------------------------------------------------
 
-def fetch_split(month: int, season: int = 2026) -> pd.DataFrame:
+def _session(cookie: str | None = None) -> requests.Session:
+    """Build a requests Session, optionally injecting a FanGraphs auth cookie.
+
+    Pass a raw cookie string (e.g. "__cflb=<val>; fg_user=<val>") or set the
+    FG_COOKIE environment variable — useful in CI where interactive login isn't
+    possible.
+    """
+    s = requests.Session()
+    raw = cookie or os.environ.get("FG_COOKIE")
+    if raw:
+        for part in raw.split(";"):
+            part = part.strip()
+            if "=" in part:
+                name, _, val = part.partition("=")
+                s.cookies.set(name.strip(), val.strip(), domain="www.fangraphs.com")
+    return s
+
+
+def fetch_split(month: int, season: int = 2026, cookie: str | None = None) -> pd.DataFrame:
     """Return raw DataFrame for one FanGraphs time split."""
     params = {**_BASE_PARAMS, "month": month, "season": season, "season1": season}
-    resp = requests.get(FG_API, params=params, timeout=30)
+    resp = _session(cookie).get(FG_API, params=params, timeout=30)
     resp.raise_for_status()
     payload = resp.json()
     return pd.DataFrame(payload["data"])
 
 
-def fetch_splits(season: int = 2026) -> dict[str, pd.DataFrame]:
+def fetch_splits(season: int = 2026, cookie: str | None = None) -> dict[str, pd.DataFrame]:
     """Fetch all defined splits and return as {split_name: DataFrame}."""
-    return {name: fetch_split(month, season) for name, month in SPLITS.items()}
+    return {name: fetch_split(month, season, cookie) for name, month in SPLITS.items()}
 
 # ---------------------------------------------------------------------------
 # Clean
@@ -103,32 +127,90 @@ def merge_splits(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
     return merged  # type: ignore[return-value]
 
 # ---------------------------------------------------------------------------
-# CLI
+# Cross-split estimation
 # ---------------------------------------------------------------------------
 
-def _print_split(name: str, df: pd.DataFrame) -> None:
-    print(f"\n=== {name.upper()} ===")
-    print(clean(df).to_string(index=False))
+RATE_STATS = ["wOBA", "K%", "BB%"]
+CROSS_SHRINKAGE = 200  # pseudo-PA toward 0.5 home fraction; tune as needed
 
+
+def compute_pa_cross_splits(df: pd.DataFrame, shrinkage: int = CROSS_SHRINKAGE) -> pd.DataFrame:
+    """
+    Estimate PA for home/away x vs_lhp/vs_rhp using proportionality.
+
+    Assumes P(home | vs_lhp) ≈ P(home). Shrinkage regularizes the home
+    fraction toward 0.5 — useful early in the season when PA_total is small.
+    """
+    out = df[["Team"]].copy()
+    pa_total = df["PA_vs_lhp"] + df["PA_vs_rhp"]
+    alpha = pa_total / (pa_total + shrinkage)
+    home_frac = alpha * (df["PA_home"] / pa_total) + (1 - alpha) * 0.5
+    away_frac = 1 - home_frac
+    out["PA_home_vs_lhp"] = (df["PA_vs_lhp"] * home_frac).round(1)
+    out["PA_away_vs_lhp"] = (df["PA_vs_lhp"] * away_frac).round(1)
+    out["PA_home_vs_rhp"] = (df["PA_vs_rhp"] * home_frac).round(1)
+    out["PA_away_vs_rhp"] = (df["PA_vs_rhp"] * away_frac).round(1)
+    return out
+
+
+def compute_rate_cross_splits(df: pd.DataFrame, stat: str) -> pd.DataFrame:
+    """
+    Estimate cross-split rate stats via additive main-effects decomposition:
+
+        rate_home_vs_lhp ≈ rate_home + rate_vs_lhp - rate_total
+
+    Assumes venue and pitcher handedness effects are additive (no interaction).
+    """
+    out = df[["Team"]].copy()
+    pa_total = df["PA_vs_lhp"] + df["PA_vs_rhp"]
+    rate_total = (
+        df["PA_vs_lhp"] * df[f"{stat}_vs_lhp"]
+        + df["PA_vs_rhp"] * df[f"{stat}_vs_rhp"]
+    ) / pa_total
+    for venue in ("home", "away"):
+        for hand in ("lhp", "rhp"):
+            out[f"{stat}_{venue}_vs_{hand}"] = (
+                df[f"{stat}_{venue}"] + df[f"{stat}_vs_{hand}"] - rate_total
+            )
+    return out
+
+
+def build_full_table(merged: pd.DataFrame, shrinkage: int = CROSS_SHRINKAGE) -> pd.DataFrame:
+    """Append all cross-split PA and rate columns to the merged base table."""
+    parts = [
+        merged,
+        compute_pa_cross_splits(merged, shrinkage).drop(columns=["Team"]),
+    ]
+    for stat in RATE_STATS:
+        if f"{stat}_vs_lhp" in merged.columns:
+            parts.append(compute_rate_cross_splits(merged, stat).drop(columns=["Team"]))
+    return pd.concat(parts, axis=1)
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Fetch FanGraphs batter leaderboards.")
     parser.add_argument("--season", type=int, default=2026)
     parser.add_argument("--out", type=str, default=None, help="CSV output path")
-    parser.add_argument("--merge", action="store_true", help="Print merged side-by-side view")
+    parser.add_argument("--shrinkage", type=int, default=CROSS_SHRINKAGE,
+                        help="Pseudo-PA shrinkage for cross-split PA estimates")
+    parser.add_argument("--cookie", type=str, default=None,
+                        help='FanGraphs session cookie string, e.g. "__cflb=X; fg_user=Y". '
+                             "Falls back to FG_COOKIE env var if unset.")
     args = parser.parse_args(argv)
 
-    frames = fetch_splits(season=args.season)
+    frames = fetch_splits(season=args.season, cookie=args.cookie)
+    merged = merge_splits(frames)
+    full = build_full_table(merged, shrinkage=args.shrinkage)
 
     if args.out:
-        merged = merge_splits(frames)
-        merged.to_csv(args.out, index=False)
-        print(f"Wrote {len(merged)} rows to {args.out}")
-    elif args.merge:
-        print(merge_splits(frames).to_string(index=False))
+        full.to_csv(args.out, index=False)
+        print(f"Wrote {len(full)} rows × {len(full.columns)} columns to {args.out}")
     else:
-        for split_name, df in frames.items():
-            _print_split(split_name, df)
+        print(full.to_string(index=False))
 
 
 if __name__ == "__main__":

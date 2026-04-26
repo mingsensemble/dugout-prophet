@@ -91,7 +91,9 @@ MANUAL_ID_TO_NAME = {
     805808: "Kevin McGonigle", 808959: "Munetaka Murakami",
     679529: "Spencer Torkelson", 800050: "Chase DeLauter",
     683357: "Owen Caissie", 701807: "Carson Benge",
-    702222: "Justin Crawford", 
+    702222: "Justin Crawford", 666126: "Carlos Cortes",
+    669236: "jeremiah Jackson", 672960: "Kazuma Okamoto",
+    702332: "Caleb Durbin",
 }
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
