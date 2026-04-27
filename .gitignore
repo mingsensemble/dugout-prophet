@@ -1,6 +1,7 @@
 ## Data & large binaries
 data/
 *.csv
+.env
 
 ## Model artifacts (binaries and scalers — keep metadata.json)
 *.pt
@@ -21,6 +22,8 @@ __pycache__/
 .DS_Store
 
 ## Archive
-archive/
+_archive/
+.claude/
 
-.env
+## Notebooks
+utils/test_script.ipynb

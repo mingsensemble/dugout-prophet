@@ -126,6 +126,28 @@ ROSTER = {
             "hr_fb":  {"mean": 0.088, "strength": 15},  
             "gb_pct": {"mean": 0.458, "strength": 15}, 
         }  
+    },  
+    "Dollander": {
+        "mlbam_id": 801403,
+        "team": "COL",
+        "roster_type": "monitoring",
+        "prior_overrides": {
+            "bb_pct": {"mean": 0.111, "strength": 15},  
+            "k_pct":  {"mean": 0.186, "strength": 15},  
+            "hr_fb":  {"mean": 0.155, "strength": 15},  
+            "gb_pct": {"mean": 0.427, "strength": 15}, 
+        }  
+    },    
+    "Arrighetti": {
+        "mlbam_id": 681293,
+        "team": "HOU",
+        "roster_type": "monitoring",
+        "prior_overrides": {
+            "bb_pct": {"mean": 0.108, "strength": 15},  
+            "k_pct":  {"mean": 0.256, "strength": 15},  
+            "hr_fb":  {"mean": 0.133, "strength": 15},  
+            "gb_pct": {"mean": 0.365, "strength": 15}, 
+        }  
     },    
 
 # benchmark players for calibration and comparison
